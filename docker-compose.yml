@@ -1,0 +1,57 @@
+services:
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.17.2
+    container_name: mlflow
+    restart: always
+    ports:
+      - "5000:5000"
+    environment:
+      - GUNICORN_CMD_ARGS=--forwarded-allow-ips=*
+    volumes:
+      - ./mlflow_data:/mlflow_data
+    # Мы добавили sh -c и tee, чтобы лог сервера тоже был в папке mlflow_data
+    command: >
+      sh -c "mlflow server 
+      --host 0.0.0.0 
+      --port 5000 
+      --backend-store-uri sqlite:///mlflow_data/mlflow.db 
+      --default-artifact-root /mlflow_data/artifacts 2>&1 | tee -a /mlflow_data/mlflow_server.log"
+
+  flask_router:
+    build:
+      context: ./app
+      dockerfile: Dockerfile.flask
+    container_name: flask_router
+    ports:
+      - "8000:8000"
+    environment:
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+    volumes:
+      - ./app:/app
+      - ./data:/app/data
+      - ./mlflow_data:/mlflow_data
+    depends_on:
+      - mlflow
+    # Добавили mkdir -p, чтобы контейнер не падал, если папки logs еще нет
+    command: >
+      sh -c "mkdir -p /app/data/logs && python main.py 2>&1 | tee -a /app/data/logs/flask.log"
+
+  airflow:
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
+    container_name: airflow
+    user: root
+    environment:
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - AIRFLOW__LOGGING__BASE_LOG_FOLDER=/opt/airflow/logs
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./scripts:/opt/airflow/scripts
+      - ./data:/opt/airflow/data
+      - ./mlflow_data:/mlflow_data
+      - ./data/logs/airflow:/opt/airflow/logs
+    ports:
+      - "8080:8080"
+    # Для Airflow standalone команда tee не нужна, он сам пишет логи очень подробно
+    command: standalone
